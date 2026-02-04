@@ -24,3 +24,9 @@ python -m app.main
 ```bash
 python -m app.InstanceGenerator
 ```
+
+## Tensor Board - Ep_rew_mean
+
+```bash
+tensorboard --logdir=app/data/logs
+```

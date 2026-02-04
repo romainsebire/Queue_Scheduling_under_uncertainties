@@ -647,7 +647,8 @@ class Env(gym.Env, ABC):
                 self._remove_abandonment_event(chosen_customer.id)
                 self.served_clients += 1
                 # get the average time required to satisfy the need using the chosen server (action)
-                mean_service = self.current_working_server.avg_service_time[action]
+                #mean_service = self.current_working_server.avg_service_time[action]
+                mean_service = self.current_working_server.avg_service_time[chosen_customer.task]
                 real_service = chosen_customer.real_service_times[self.current_working_server.id]
 
                 self.total_service_time += real_service
@@ -720,8 +721,8 @@ class Env(gym.Env, ABC):
         """
         waiting_customers = self.customer_waiting
 
-        next(iter(waiting_customers.values())).real_service_times = None
-        next(iter(waiting_customers.values())).abandonment_time = None
+        #next(iter(waiting_customers.values())).real_service_times = None
+        #next(iter(waiting_customers.values())).abandonment_time = None
 
         appointments = self.appointments
 

@@ -35,16 +35,19 @@ class ChildPolicy(Policy):
         # This allows the algorithm to see which actions are forbidden at each step
         env = ActionMasker(env, self._mask_fn)
 
+        log_dir = os.path.join("app", "data", "logs")
         # 3. Model initialization
         # "MultiInputPolicy" is required because the observation is a Dict (queue, servers, context)
         self.model = MaskablePPO(
             "MultiInputPolicy", 
             env, 
             verbose=verbose,
+            tensorboard_log=log_dir,
             learning_rate=3e-4,
             gamma=0.99,            # Discount factor (future reward weighting)
             ent_coef=0.01,         # Encourages some exploration at the beginning
-            batch_size=64
+            batch_size=256,
+            n_steps=1024
         )
 
         # 4. Start training
