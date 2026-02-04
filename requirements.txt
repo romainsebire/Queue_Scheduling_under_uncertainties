@@ -1,0 +1,9 @@
+seaborn
+gymnasium
+numpy
+matplotlib
+pandas
+tqdm
+
+sb3-contrib 
+shimmy

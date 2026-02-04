@@ -1,0 +1,18 @@
+{
+  "num_servers": 20,
+  "max_arrival_time": 600,
+  "max_sim_time": 630,
+  "C": 30,
+  "lambdas": 2,
+  "avg_low": 1,
+  "avg_high": 30,
+  "deviation_low": 1,
+  "deviation_high": 3,
+  "repetition": 50, 
+  "unbearable_wait": 60,
+  "p_appointment": 0.3,
+  "p_no_show": 0.1,
+  "p_unavailability": 0.3,
+  "mean_time_between_arrivals": 1,
+  "unbearable_wait_appointement": 30
+}
