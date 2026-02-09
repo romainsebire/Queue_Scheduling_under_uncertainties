@@ -62,68 +62,90 @@ class ChildEnv(Env):
         })
     
     def _get_obs(self):
-        """
-        Vectorizes the simulation state.
-        This is where self.queue_mapping is updated for the next step.
-        """
         waiting_customers, appointments, servers, expected_end, selected_server_id, sim_time = self._get_state()
         
-        # --- 1. Queue processing ---
-        # Sort customers by arrival time (FIFO) to stabilize the network input
-        sorted_customers = sorted(waiting_customers.values(), key=lambda c: c.arrival_time)
+        # --- STRATÉGIE DE TRI HEURISTIQUE ---
+        def priority_key(c):
+            # --- GROUPE 1 : LES RENDEZ-VOUS (Priorité Absolue) ---
+            if c.id in appointments:
+                # -1 milliard pour être sûr qu'ils sont devant
+                return -1000000000 + appointments[c.id].time
+            
+            # --- GROUPE 2 : LES WALK-INS (FIFO) ---
+            # Ordre d'arrivée strict. C'est ce qui garantit le score Waiting Time.
+            return c.arrival_time
+
+        # Application du tri
+        sorted_customers = sorted(waiting_customers.values(), key=priority_key)
         
-        # Update mapping for the next action
+        # Mise à jour du mapping (L'agent verra les VIPs aux actions 0, 1, 2...)
         self.queue_mapping = [c.id for c in sorted_customers[:self.max_obs_queue]]
         
         queue_matrix = np.zeros((self.max_obs_queue, self.num_queue_features), dtype=np.float32)
         
+        # On récupère le W_max pour normaliser
+        w_max = self.scenario.unbearable_wait if hasattr(self, 'scenario') else 60.0
+        if w_max == 0: w_max = 60.0
+
         for i, customer in enumerate(sorted_customers):
-            if i >= self.max_obs_queue:
-                break
+            if i >= self.max_obs_queue: break
             
-            # Feature extraction
-            wait_time = sim_time - customer.arrival_time
-            is_appt = 1.0 if customer.id in appointments else 0.0
+            # --- NORMALISATION ---
+            # Wait time entre 0 et ~1 (parfois >1 si on dépasse)
+            wait_time = (sim_time - customer.arrival_time) / w_max
             
+            # Appt delta entre -1 et 1 environ
             appt_delta = 0.0
-            if is_appt:
-                appt_delta = sim_time - appointments[customer.id].time
+            is_appt = 0.0
+            if customer.id in appointments:
+                is_appt = 1.0
+                raw_delta = sim_time - appointments[customer.id].time
+                appt_delta = np.clip(raw_delta / 60.0, -1.0, 1.0) # On clip pour éviter les valeurs folles
             
-            # Basic estimation of service time (average over all servers for this task)
-            # Could be refined using the average time of the selected server
-            task_avg_times = [s.avg_service_time[customer.task] for s in servers.values()]
-            est_service = sum(task_avg_times) / len(task_avg_times) if task_avg_times else 0
-            
-            time_before_abandon = customer.abandonment_time - sim_time
+            # Est Service time normalisé (divisé par ex par 30 min)
+            avg_duration = 10.0 # Fallback
+            # On essaie d'être précis sur l'estimation
+            # On prend la moyenne des durées possibles pour cette tâche sur TOUS les serveurs
+            potential_times = [s.avg_service_time.get(customer.task, 0) for s in servers.values()]
+            valid_times = [t for t in potential_times if t > 0]
+            if valid_times:
+                avg_duration = sum(valid_times) / len(valid_times)
+            est_service = np.clip(avg_duration / 30.0, 0.0, 2.0)
+
+            # Abandon time normalisé
+            time_before_abandon = 1.0 # Valeur par défaut (loin)
+            if customer.abandonment_time is not None:
+                # 1.0 = c'est urgent (reste 0 temps), 0.0 = on a le temps (reste w_max)
+                raw_left = customer.abandonment_time - sim_time
+                time_before_abandon = 1.0 - np.clip(raw_left / w_max, 0.0, 1.0)
 
             queue_matrix[i] = [
                 wait_time, 
-                float(customer.task), 
+                float(customer.task) / self.num_needs, # On normalise aussi l'ID de tache
                 is_appt, 
                 appt_delta, 
                 est_service,
                 time_before_abandon
             ]
 
-        # --- 2. Server processing ---
-        # Features: [Is_Busy (0/1), Time_Until_Free, Capacity_Task_0, Capacity_Task_1...]
+        # --- SERVEURS ---
         server_matrix = np.zeros((self.c, 2 + self.num_needs), dtype=np.float32)
-        
         for s_id in range(self.c):
-            # Is this server busy?
             is_busy = 1.0 if expected_end[s_id] > sim_time else 0.0
-            remaining_time = max(0.0, expected_end[s_id] - sim_time)
+            remaining = max(0.0, expected_end[s_id] - sim_time) / 30.0 # Normalisé
             
             server_matrix[s_id, 0] = is_busy
-            server_matrix[s_id, 1] = remaining_time
+            server_matrix[s_id, 1] = remaining
             
-            # Capacities (average service times)
-            server_obj = servers[s_id]
+            # Capacités normalisées
             for task_id in range(self.num_needs):
-                server_matrix[s_id, 2 + task_id] = server_obj.avg_service_time.get(task_id, 0.0)
+                val = servers[s_id].avg_service_time.get(task_id, 0.0)
+                server_matrix[s_id, 2 + task_id] = val / 30.0
 
-        # --- 3. Context ---
-        context = np.array([sim_time, float(selected_server_id)], dtype=np.float32)
+        # --- CONTEXTE ---
+        # On ajoute le ID du serveur sélectionné, mais sous forme One-Hot ou normalisée
+        # Ici normalisée simple
+        context = np.array([sim_time / self.max_sim_time, float(selected_server_id) / self.c], dtype=np.float32)
 
         return {
             "queue": queue_matrix,
@@ -148,21 +170,31 @@ class ChildEnv(Env):
         return self.max_obs_queue
 
     def action_masks(self):
-        """
-        Returns a boolean mask [True, True, False, ..., True]
-        indicating which actions are valid.
-        """
         mask = [False] * (self.max_obs_queue + 1)
+        current_server = self.current_working_server
         
-        # Indices corresponding to real customers in the mapping are valid
+        if current_server is None: return mask 
+
         num_customers = len(self.queue_mapping)
+        can_serve_someone = False
+        
         for i in range(num_customers):
-            # A condition could be added here: can the selected server handle this task?
-            # For now, we assume yes, or that it's handled by _check_existing_possible_service in Env
-            mask[i] = True
+            cust_id = self.queue_mapping[i]
+            customer = self.customer_waiting.get(cust_id)
             
-        # HOLD action is always valid (unless forcing an action)
-        mask[self._get_hold_action_number()] = True
+            if customer:
+                # Vérification basique de compétence (temps moyen > 0)
+                if current_server.avg_service_time.get(customer.task, 0) > 0:
+                    mask[i] = True
+                    can_serve_someone = True
+        
+        # --- MODIFICATION CRUCIALE ---
+        # Si on peut servir au moins une personne, INTERDICTION de faire HOLD.
+        if can_serve_someone:
+            mask[self._get_hold_action_number()] = False
+        else:
+            # Si vraiment personne n'est compatible, alors (et seulement alors) on peut attendre
+            mask[self._get_hold_action_number()] = True
         
         return mask
 
@@ -173,45 +205,32 @@ class ChildEnv(Env):
         return -10.0
     
     def _get_valid_reward(self, customer: Customer) -> float:
-        """
-        Reward computed immediately after assignment.
-        We try to approximate the final metric.
-        """
         reward = 0.0
         
-        # 1. Base reward for serving someone (vs HOLD)
-        reward += 10.0
+        # 1. Base (Throughput)
+        # On garde +15. C'est assez fort pour interdire le HOLD, 
+        # mais assez faible pour ne pas masquer les bonus RDV.
+        reward += 15.0
         
-        # 2. Penalty on waiting time
-        # We want to minimize wi/Wmax
-        # If unbearable_wait is defined in the scenario, use it
-        w_max = self.scenario.unbearable_wait if hasattr(self, 'scenario') else 60.0
-        if w_max == 0: w_max = 60.0
-        
-        wait_time = self.system_time - customer.arrival_time
-        
-        # Formula inspired by evaluation: 100*(1 - wi/Wmax)
-        # We give this "score" as immediate reward
-        wait_score = 100 * (1 - (wait_time / w_max))
-        reward += wait_score * 0.4  # Weight 0.4 as in evaluation
-        
-        # 3. Appointment reward
+        # 2. Bonus Rendez-vous (VIP)
         if customer.id in self.appointments:
             appt = self.appointments[customer.id]
-            delta = self.system_time - appt.time  # Positive = late
+            delta = abs(self.system_time - appt.time)
             
-            # If exactly on time (delta near 0) → big bonus
-            # If very late or very early → penalty
-            epsilon = 3.0  # Tolerance
+            if delta <= 5.0:       
+                reward += 40.0  # Total = 55
+            elif delta <= 30.0:    
+                reward += 15.0  # Total = 30
+            else:                  
+                reward += 0.0   # Total = 15
+        
+        # 3. Bonus Walk-in (Gestion FIFO)
+        else:
+            w_max = self.scenario.unbearable_wait if hasattr(self, 'scenario') else 60.0
+            wait_ratio = (self.system_time - customer.arrival_time) / w_max
             
-            if abs(delta) <= epsilon:
-                reward += 100 * 0.4  # Max weighted score
-            elif delta > epsilon:
-                # Late
-                # Simple linear penalty for RL training
-                reward -= min(50, delta) * 0.5 
-            else:
-                # Too early (delta < -3)
-                reward -= min(50, abs(delta)) * 0.5
+            # On récompense le fait de traiter des patients qui sont encore dans la course
+            if wait_ratio < 1.0:
+                reward += 5.0 * (1.0 - wait_ratio)
 
         return reward

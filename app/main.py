@@ -18,7 +18,7 @@ def main():
     
     model = ChildPolicy("Env")
 
-    model.learn(scenario, 500_000, verbose=1)
+    model.learn(scenario,150_000, verbose=1)
 
     instance = Instance.create(Instance.SourceType.FILE,
                     "app/data/data_files/timeline_0.json", 
