@@ -37,7 +37,7 @@ class ChildPolicy(Policy):
 
         log_dir = os.path.join("app", "data", "logs")
         # 3. Model initialization
-        policy_kwargs = dict(net_arch=[256, 256])
+        policy_kwargs = dict(net_arch=[512, 512])
         # "MultiInputPolicy" is required because the observation is a Dict (queue, servers, context)
         self.model = MaskablePPO(
             "MultiInputPolicy", 
