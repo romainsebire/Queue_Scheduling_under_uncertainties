@@ -50,7 +50,7 @@ class Env(gym.Env, ABC):
 
         
         self.customers_arrival = self._create_customers_from_steps(data.timeline)
-        self._build_servers_from_average_matrix(np.array(data.average_matrix, dtype=np.float32))
+        self.servers = self._build_servers_from_average_matrix(np.array(data.average_matrix, dtype=np.float32))
         self.events = Events()
         self.customer_waiting = dict()
         
@@ -224,14 +224,15 @@ class Env(gym.Env, ABC):
                     )
                 self.events.add(event=event)
        
+    @classmethod
     def _build_servers_from_average_matrix(self, service_time_matrix: list[list]):
         """
         Create a dict {server_id: Server} from the average service time matrix.
         """
-        num_servers = self.c
-        num_needs = self.num_needs
+        num_servers = len(service_time_matrix)
+        num_needs = len(service_time_matrix[0])
 
-        self.servers = {
+        servers = {
             s: Server(
                 id=s,
                 avg_service_time={
@@ -241,6 +242,7 @@ class Env(gym.Env, ABC):
             )
             for s in range(num_servers)
         }
+        return servers
 
     @classmethod
     def _get_appointments_from_list(self, appointments_list: list[list[int, int, float]]):
@@ -578,7 +580,7 @@ class Env(gym.Env, ABC):
             self.server_unavailability = data.unavailability
             self.customers_arrival = self._create_customers_from_steps(data.timeline)
             self.appointments = self._get_appointments_from_list(data.appointments)
-            self._build_servers_from_average_matrix(np.array(data.average_matrix, dtype=np.float32))
+            self.servers = self._build_servers_from_average_matrix(np.array(data.average_matrix, dtype=np.float32))
  
         
         
@@ -642,12 +644,10 @@ class Env(gym.Env, ABC):
                 reward = self._get_invalid_action_reward()
             # The chosen task is valid
             else: 
-
                 self.remove_waiting_customer(chosen_customer.id)
                 self._remove_abandonment_event(chosen_customer.id)
                 self.served_clients += 1
                 # get the average time required to satisfy the need using the chosen server (action)
-                #mean_service = self.current_working_server.avg_service_time[action]
                 mean_service = self.current_working_server.avg_service_time[chosen_customer.task]
                 real_service = chosen_customer.real_service_times[self.current_working_server.id]
 
@@ -667,7 +667,7 @@ class Env(gym.Env, ABC):
                     'start': assign_time,
                     'end': end_time,
                     'client': chosen_customer.id,
-                    'class': action,
+                    'class': chosen_customer.task,
                     'estimated_proc_time': mean_service,
                     'real_proc_time': end_time - assign_time,
                 })
@@ -719,14 +719,16 @@ class Env(gym.Env, ABC):
         """
         Get current state, usable for observations.
         """
-        waiting_customers = self.customer_waiting
+        waiting_customers = copy.deepcopy(self.customer_waiting)
 
-        #next(iter(waiting_customers.values())).real_service_times = None
-        #next(iter(waiting_customers.values())).abandonment_time = None
+        for c in waiting_customers.values():
+            c.real_service_times = None
+            c.abandonment_time = None
 
-        appointments = self.appointments
 
-        servers = self.servers
+        appointments = copy.deepcopy(self.appointments)
+
+        servers = copy.deepcopy(self.servers)
 
         end_of_service = {
             server_id: self.current_server_activity.get(server_id, None).expected_stop

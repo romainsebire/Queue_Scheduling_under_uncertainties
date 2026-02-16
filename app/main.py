@@ -1,3 +1,4 @@
+from pyexpat import model
 from app.simulation.policies.ChildPolicy import ChildPolicy
 from app.data.Instance import Instance
 import gymnasium as gym
@@ -5,7 +6,7 @@ from app.simulation.policies.PolicyEvaluation import PolicyEvaluation
 from gymnasium.envs.registration import register
 from app.data.Scenario import Scenario
 from app.simulation.envs.Env import Env
-#from app.simulation.envs.ChildEnv import ChildEnv
+from app.simulation.envs.ChildEnv import ChildEnv
 
 # ----- Save in Gym -----
 register(
@@ -18,7 +19,8 @@ def main():
     
     model = ChildPolicy("Env")
 
-    model.learn(scenario,150_000, verbose=1)
+    model.learn(scenario,160_000, verbose=1)
+    model.model.save("ppo_160k_65")
 
     instance = Instance.create(Instance.SourceType.FILE,
                     "app/data/data_files/timeline_0.json", 
