@@ -7,6 +7,7 @@ from gymnasium.envs.registration import register
 from app.data.Scenario import Scenario
 from app.simulation.envs.Env import Env
 from app.simulation.envs.ChildEnv import ChildEnv
+from stable_baselines3.common.callbacks import CheckpointCallback
 
 # ----- Save in Gym -----
 register(
@@ -17,10 +18,15 @@ register(
 def main():
     scenario = Scenario.from_json("app/data/config/queue_config.json")
     
+    checkpoint_callback = CheckpointCallback(
+        save_freq=10_000,                  # Fréquence de sauvegarde
+        save_path='./logs/checkpoints/',   # Dossier de destination
+        name_prefix='ppo_model'            # Préfixe du nom de fichier
+    )
+
     model = ChildPolicy("Env")
 
-    model.learn(scenario,160_000, verbose=1)
-    model.model.save("ppo_160k_65")
+    model.learn(scenario,160_000, callback=checkpoint_callback, verbose=1)
 
     instance = Instance.create(Instance.SourceType.FILE,
                     "app/data/data_files/timeline_0.json", 

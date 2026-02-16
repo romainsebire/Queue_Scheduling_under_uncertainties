@@ -22,7 +22,7 @@ is_valid = True
 
 model = ChildPolicy("Model")
 try:
-    trained_model = MaskablePPO.load("ppo_160k_65")
+    trained_model = MaskablePPO.load("last_trained_model.zip")
     model.model = trained_model
     print("Modèle chargé avec succès.")
 except FileNotFoundError:

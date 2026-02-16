@@ -37,19 +37,18 @@ class ChildPolicy(Policy):
 
         log_dir = os.path.join("app", "data", "logs")
         # 3. Model initialization
-        policy_kwargs = dict(net_arch=[512, 512])
         # "MultiInputPolicy" is required because the observation is a Dict (queue, servers, context)
         self.model = MaskablePPO(
-            "MultiInputPolicy", 
+            "MlpPolicy",
             env, 
-            verbose=verbose,
-            tensorboard_log=log_dir,
-            learning_rate=3e-3,
-            gamma=0.99,            # Discount factor (future reward weighting)
-            ent_coef=0.01,         # Encourages some exploration at the beginning
-            batch_size=512,
-            n_steps=2048,
-            policy_kwargs=policy_kwargs
+            verbose=1,
+            tensorboard_log="app/data/logs", 
+            learning_rate=3e-4,
+            batch_size=256,
+            n_steps=2048,   
+            gamma=0.99,
+            ent_coef=0.01,
+            policy_kwargs=dict(net_arch=[256, 256])
         )
 
         # 4. Start training
