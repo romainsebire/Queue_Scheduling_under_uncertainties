@@ -22,7 +22,7 @@ class ChildPolicy(Policy):
         """
         return env.unwrapped.action_masks()
 
-    def learn(self, scenario, total_timesteps, verbose):
+    def learn(self, scenario, total_timesteps, verbose=1, **kwargs):
         """
         Trains the RL agent using MaskablePPO.
         """
@@ -52,7 +52,7 @@ class ChildPolicy(Policy):
         )
 
         # 4. Start training
-        self.model.learn(total_timesteps=total_timesteps)
+        self.model.learn(total_timesteps=total_timesteps,**kwargs)
         
         # 5. Save the model
         self.model.save(self.model_path)

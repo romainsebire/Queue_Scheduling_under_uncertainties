@@ -5,12 +5,22 @@ import numpy as np
 
 class ChildEnv(Env):
     def __init__(self, mode, instance=None, scenario=None):
-        # On définit les index d'action AVANT d'appeler super().__init__
-        # car le parent va appeler _get_action_space immédiatement.
+        # 1. DÉFINITION DES PARAMÈTRES (AVANT le parent)
+        # On doit le faire ici car le parent va appeler reset() -> action_masks()
+        # avant de nous rendre la main.
         
-        # Note: self.num_needs n'est pas encore dispo ici si on n'a pas l'instance,
-        # mais le parent stocke l'instance avant d'appeler les méthodes abstraites.
-        # On fait confiance à l'architecture du parent.
+        if scenario:
+            self.limit_wait = scenario.unbearable_wait
+            # On utilise getattr pour éviter un crash si la variable change de nom dans le json
+            self.limit_vip_delay = getattr(scenario, 'unbearable_wait_appointement', 30.0)
+        else:
+            self.limit_wait = 60.0
+            self.limit_vip_delay = 30.0
+            
+        # On définit aussi la limite d'avance (hardcodée ou via config si dispo)
+        self.limit_vip_early = 60.0
+
+        # 2. INITIALISATION DU PARENT
         super().__init__(mode, instance, scenario)
 
     # =========================================================================
@@ -37,40 +47,61 @@ class ChildEnv(Env):
         return -10.0
 
     def _get_customer_from_action(self, action):
-        """
-        C'est ICI que réside l'intelligence "Chef de Service".
-        L'agent donne une CATÉGORIE (action), nous trouvons le PATIENT.
-        """
         vip_action = self.num_needs
         wait_action = self.num_needs + 1
         
+        # Paramètres exacts
+        unbearable_wait = self.limit_wait # 60
+        unbearable_appt = self.limit_vip_delay # 30
+        max_early = 60.0
+        
         # CAS 1 : WAIT
         if action == wait_action:
-            return None # Le parent gérera le _step_wait
+            return None
 
         # CAS 2 : VIP (Rendez-vous)
         if action == vip_action:
             candidates = []
             for c in self.customer_waiting.values():
                 if c.id in self.appointments:
-                    # Vérification compétence serveur
+                    # Compétence
                     if self.current_working_server.avg_service_time.get(c.task, 0) > 0:
+                        
+                        appt_time = self.appointments[c.id].time
+                        current_delay = self.system_time - appt_time
+
+                        # --- FILTRE CORRIGÉ (Basé sur le START uniquement) ---
+                        
+                        # A. Pas trop en avance (ex: pas avant -60 min)
+                        if current_delay < -max_early:
+                            continue 
+                            
+                        # B. Pas trop en retard (ex: pas après +30 min)
+                        # ON NE RAJOUTE PAS LA DURÉE DU SOIN ICI !
+                        if current_delay > unbearable_appt:
+                            continue # Il est déjà mort AVANT qu'on commence.
+
                         candidates.append(c)
             
             if not candidates: return None
-            # Tri : Le RDV le plus prioritaire (heure la plus petite)
+            
+            # Tri : On prend le plus urgent (celui qui est le plus proche de la limite +30)
             return min(candidates, key=lambda c: self.appointments[c.id].time)
 
-        # CAS 3 : TÂCHE SPÉCIFIQUE (Walk-in)
-        # L'action correspond à l'ID de la tâche (0, 1, 2...)
+        # CAS 3 : TÂCHE WALK-IN
         task_id = action
         candidates = []
         for c in self.customer_waiting.values():
             if c.task == task_id and c.id not in self.appointments:
-                candidates.append(c)
+                
+                # --- FILTRE CORRIGÉ (Basé sur le START uniquement) ---
+                current_wait = self.system_time - c.arrival_time
+                
+                # Si on le commence MAINTENANT, est-ce que ça compte ?
+                if current_wait < unbearable_wait:
+                    candidates.append(c)
         
         if not candidates: return None
-        # Tri : FIFO Strict (le plus vieux d'abord)
         return min(candidates, key=lambda c: c.arrival_time)
 
     # =========================================================================
@@ -138,7 +169,11 @@ class ChildEnv(Env):
     # =========================================================================
 
     def action_masks(self):
+        # 0..N-1 : Tâches Walk-in
+        # N      : VIP
+        # N+1    : WAIT
         mask = [False] * (self.num_needs + 2)
+        
         server = self.current_working_server
         if server is None: return mask
         
@@ -146,27 +181,56 @@ class ChildEnv(Env):
         vip_action = self.num_needs
         wait_action = self.num_needs + 1
         
-        # 1. Tâches Walk-in
+        # --- Paramètres de tri (alignés avec PolicyEvaluation) ---
+        # Limite Walk-in : 60 min d'attente max
+        limit_wait = self.limit_wait 
+        
+        # Limite VIP Retard : 30 min max après l'heure
+        limit_vip_late = self.limit_vip_delay 
+        
+        # Limite VIP Avance : On ne prend pas plus de 60 min avant l'heure
+        limit_vip_early = 60.0 
+        
+        # --- 1. TÂCHES WALK-IN (0 à N-1) ---
         for t_id in range(self.num_needs):
+            # A. Est-ce que je sais faire cette tâche ?
             if server.avg_service_time.get(t_id, 0) > 0:
-                # Y a-t-il un candidat ?
+                
+                # B. Y a-t-il un candidat VIVANT pour cette tâche ?
                 for c in waiting_customers.values():
                     if c.task == t_id and c.id not in self.appointments:
-                        mask[t_id] = True
-                        break
-
-        # 2. VIP
+                        
+                        # FILTRE "START TIME" :
+                        # Le patient est-il en dessous de la limite d'attente MAINTENANT ?
+                        current_wait = self.system_time - c.arrival_time
+                        
+                        if current_wait < limit_wait:
+                            mask[t_id] = True
+                            break # On en a trouvé au moins un, l'action est valide
+                            
+        # --- 2. VIP (Action N) ---
         has_vip = False
         for c in waiting_customers.values():
             if c.id in self.appointments:
+                # A. Est-ce que je sais faire sa tâche ?
                 if server.avg_service_time.get(c.task, 0) > 0:
-                    has_vip = True
-                    break
+                    
+                    # B. Est-il dans la FENÊTRE DE TIR ?
+                    appt_time = self.appointments[c.id].time
+                    current_delay = self.system_time - appt_time
+                    
+                    # Condition 1 : Pas trop en avance (ex: pas avant -60 min)
+                    # Condition 2 : Pas trop en retard (ex: pas après +30 min)
+                    if -limit_vip_early <= current_delay <= limit_vip_late:
+                        has_vip = True
+                        break # On en a trouvé au moins un valide
+                        
         if has_vip:
             mask[vip_action] = True
             
-        # 3. Wait
-        # Si on peut travailler, on travaille (Anti-Grève)
+        # --- 3. WAIT (Action N+1) ---
+        # Stratégie Anti-Grève : Si on peut travailler, on travaille.
+        # On n'autorise WAIT que si absolument aucune autre action n'est possible.
         if any(mask[:-1]): 
             mask[wait_action] = False
         else:
