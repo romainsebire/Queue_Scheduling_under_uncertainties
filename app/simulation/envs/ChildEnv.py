@@ -50,10 +50,11 @@ class ChildEnv(Env):
         vip_action = self.num_needs
         wait_action = self.num_needs + 1
         
-        # Paramètres exacts
-        unbearable_wait = self.limit_wait # 60
+        # Paramètres exacts (Hard-coded pour correspondre à PolicyEvaluation)
+        unbearable_wait = self.limit_wait      # 60
         unbearable_appt = self.limit_vip_delay # 30
         max_early = 60.0
+        epsilon = 3.0 # Le plateau de tolérance
         
         # CAS 1 : WAIT
         if action == wait_action:
@@ -64,29 +65,49 @@ class ChildEnv(Env):
             candidates = []
             for c in self.customer_waiting.values():
                 if c.id in self.appointments:
-                    # Compétence
+                    # 1. Compétence
                     if self.current_working_server.avg_service_time.get(c.task, 0) > 0:
                         
                         appt_time = self.appointments[c.id].time
-                        current_delay = self.system_time - appt_time
+                        delay = self.system_time - appt_time
 
-                        # --- FILTRE CORRIGÉ (Basé sur le START uniquement) ---
-                        
-                        # A. Pas trop en avance (ex: pas avant -60 min)
-                        if current_delay < -max_early:
-                            continue 
-                            
-                        # B. Pas trop en retard (ex: pas après +30 min)
-                        # ON NE RAJOUTE PAS LA DURÉE DU SOIN ICI !
-                        if current_delay > unbearable_appt:
-                            continue # Il est déjà mort AVANT qu'on commence.
-
-                        candidates.append(c)
+                        # 2. FILTRE ZOMBIE (On ne prend que les 'sauvables')
+                        # Doit être entre -60 (trop tôt) et +30 (trop tard)
+                        if -max_early <= delay <= unbearable_appt:
+                            candidates.append(c)
             
             if not candidates: return None
             
-            # Tri : On prend le plus urgent (celui qui est le plus proche de la limite +30)
-            return min(candidates, key=lambda c: self.appointments[c.id].time)
+            # --- FONCTION DE SCORE LOCALE ---
+            # On reproduit exactement la logique de PolicyEvaluation
+            def potential_vip_score(c):
+                appt_time = self.appointments[c.id].time
+                # delay positif = retard, négatif = avance
+                delay = self.system_time - appt_time 
+                
+                # Zone parfaite [-3, +3] -> 100 pts
+                if abs(delay) <= epsilon:
+                    return 100.0
+                
+                # Zone Avance [-60, -3[ -> Croissance linéaire
+                elif delay < -epsilon:
+                    # Si delay = -60 -> 0 pts. Si delay = -3 -> 100 pts.
+                    # Formule simplifiée (proche de PolicyEvaluation)
+                    score = 100 * (1 - (abs(delay) - epsilon) / (max_early - epsilon))
+                    return max(0.0, score)
+                
+                # Zone Retard ]+3, +30] -> Décroissance linéaire (pente raide)
+                else: # delay > epsilon
+                    # Si delay = 3 -> 100 pts. Si delay = 30 -> 0 pts.
+                    score = 100 * (1 - (delay - epsilon) / (unbearable_appt - epsilon))
+                    return max(0.0, score)
+
+            # TRI GREEDY : On prend celui qui a le MEILLEUR score MAINTENANT
+            # Cela va favoriser naturellement :
+            # 1. Ceux dans la zone +/- 3 min (Score 100)
+            # 2. Ceux en avance (car la pente est douce, le score reste haut longtemps)
+            # 3. Ceux en léger retard
+            return max(candidates, key=potential_vip_score)
 
         # CAS 3 : TÂCHE WALK-IN
         task_id = action
@@ -94,15 +115,18 @@ class ChildEnv(Env):
         for c in self.customer_waiting.values():
             if c.task == task_id and c.id not in self.appointments:
                 
-                # --- FILTRE CORRIGÉ (Basé sur le START uniquement) ---
+                # FILTRE ZOMBIE (Start Time)
                 current_wait = self.system_time - c.arrival_time
-                
-                # Si on le commence MAINTENANT, est-ce que ça compte ?
                 if current_wait < unbearable_wait:
                     candidates.append(c)
         
         if not candidates: return None
-        return min(candidates, key=lambda c: c.arrival_time)
+        
+        # TRI GREEDY WALK-IN (LIFO)
+        # On maximise le score courant : Score = 100 * (1 - wait/60)
+        # Donc on veut minimiser le wait.
+        # Donc on prend le plus récent (Arrival Time le plus grand).
+        return max(candidates, key=lambda c: c.arrival_time)
 
     # =========================================================================
     # 2. LOGIQUE D'OBSERVATION (TABLEAU DE BORD)
