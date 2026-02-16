@@ -3,7 +3,7 @@ import gymnasium as gym
 import numpy as np
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
-
+from stable_baselines3.common.monitor import Monitor
 from app.simulation.policies.Policy import Policy
 from app.simulation.envs.Env import Env
 
@@ -15,14 +15,15 @@ class ChildPolicy(Policy):
         self.model_path = os.path.join("app", "data", "models", "ppo_child_policy")
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
 
-    def _mask_fn(self, env):
+    @staticmethod
+    def _mask_fn(env):
         """
         Helper function to extract the action mask from the environment.
         Required for the ActionMasker wrapper.
         """
         return env.unwrapped.action_masks()
 
-    def learn(self, scenario, total_timesteps, verbose=1, **kwargs):
+    def learn(self, scenario, total_timesteps, verbose=1, callback=None, **kwargs):
         """
         Trains the RL agent using MaskablePPO.
         """
@@ -30,12 +31,11 @@ class ChildPolicy(Policy):
         
         # 1. Create the training environment
         env = gym.make("Child_Env", mode=Env.MODE.TRAIN, scenario=scenario)
-        
+        env = Monitor(env)
         # 2. ActionMasker wrapper (CRUCIAL)
         # This allows the algorithm to see which actions are forbidden at each step
         env = ActionMasker(env, self._mask_fn)
 
-        log_dir = os.path.join("app", "data", "logs")
         # 3. Model initialization
         # "MultiInputPolicy" is required because the observation is a Dict (queue, servers, context)
         self.model = MaskablePPO(
@@ -52,7 +52,7 @@ class ChildPolicy(Policy):
         )
 
         # 4. Start training
-        self.model.learn(total_timesteps=total_timesteps,**kwargs)
+        self.model.learn(total_timesteps=total_timesteps, callback=callback, **kwargs)
         
         # 5. Save the model
         self.model.save(self.model_path)
