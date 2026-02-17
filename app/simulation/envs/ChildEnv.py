@@ -75,17 +75,18 @@ class ChildEnv(Env):
                 elif delay < -epsilon: quality = 100 * (1 - (abs(delay)-epsilon)/(limit_vip_early-epsilon))
                 else: quality = 100 * (1 - (delay-epsilon)/(limit_vip_delay-epsilon))
                 
-                quality = max(0.1, quality) # On évite 0 pour la division
+                quality = max(0.1, quality) 
 
                 # 2. Récupérer la Durée Estimée (Coût)
                 duration = server.avg_service_time.get(c.task, 10.0)
-                duration = max(1.0, duration) # Sécurité division par zéro
+                duration = max(1.0, duration) 
 
-                # 3. Calculer le ROI (Points par Minute)
-                roi = quality / duration
+                # 3. Calculer le ROI AVEC BOOST
+                # ON AJOUTE UN MULTIPLICATEUR (x2.0)
+                # Cela signifie : "Même si c'est long, c'est un RDV, c'est sacré."
+                # Cela permet de passer devant les petits walk-ins très rentables.
+                roi = (quality * 2.0) / duration
                 
-                # Tie-breaker : Si ROI proche, on privilégie l'urgence (le plus vieux RDV)
-                # On retourne un tuple (ROI, -HeureRDV) -> Python trie par le 1er, puis le 2eme
                 return (roi, -appt_time)
 
             # On prend le candidat avec le meilleur ROI
