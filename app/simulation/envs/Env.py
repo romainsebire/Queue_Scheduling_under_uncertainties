@@ -700,7 +700,10 @@ class Env(gym.Env, ABC):
 
         else:  # HOLD action 
             self.servers_on_hold[self.current_working_server.id] = 1
-            reward = -1
+            if hasattr(self, '_get_hold_reward'):
+                reward = self._get_hold_reward()
+            else:
+                reward = -1
 
         self._update_next_step()
 
