@@ -15,30 +15,22 @@ class ChildEnv(Env):
         self.limit_vip_early = 60.0 
         super().__init__(mode, instance, scenario)
 
-    # =========================================================================
-    # 1. ESPACES D'ACTION ULTRA-SIMPLIFIÉ
-    # =========================================================================
-
     def _get_action_space(self):
-        # 0 : Priorité aux VIP (Rendez-vous)
-        # 1 : Priorité aux Walk-ins (Sans RDV)
-        # 2 : Wait
+        # 0 : prioritize patients with appointments (vip)
+        # 1 : prioritize walk-ins
+        # 2 : wait
         return spaces.Discrete(3)
 
     def _get_observation_space(self):
-        # On garde l'observation détaillée pour que l'agent sache QUOI choisir.
-        # Pour chaque tâche : [Walkin_Count, Walkin_Max_Wait, VIP_Count, VIP_Urgency, Efficiency]
-        # + Global : [Time, My_ID]
+        # detailed observation for strategic decision
+        # per task: [walkin_count, walkin_max_wait, vip_count, vip_urgency, efficiency]
+        # + global: [time, my_id]
         feats_per_task = 5
         obs_size = (self.num_needs * feats_per_task) + 2
         return spaces.Box(low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32)
 
     def _get_hold_action_number(self):
-        return 2 # L'index de l'action WAIT
-
-    # =========================================================================
-    # 2. DÉCODAGE INTELLIGENT (HEURISTIQUES)
-    # =========================================================================
+        return 2 # wait action index
 
     def _get_customer_from_action(self, action):
         wait_action = self._get_hold_action_number()
@@ -46,17 +38,17 @@ class ChildEnv(Env):
 
         server = self.current_working_server
         
-        # --- PARAMÈTRES ---
+        # parameters
         limit_wait = self.limit_wait      
         limit_vip_delay = self.limit_vip_delay 
         limit_vip_early = self.limit_vip_early       
         epsilon = 3.0
 
-        # --- ACTION 0 : SERVE_VIP (Optimisé ROI) ---
+        # action 0 : serve patient with appointment (roi optimized)
         if action == 0:
             candidates = []
             for c in self.customer_waiting.values():
-                # Filtre de base (RDV + Compétence + Fenêtre)
+                # basic filter (appointment + competence + window)
                 if c.id in self.appointments and server.avg_service_time.get(c.task, 0) > 0:
                     delay = self.system_time - self.appointments[c.id].time
                     if -limit_vip_early <= delay <= limit_vip_delay:
@@ -64,9 +56,9 @@ class ChildEnv(Env):
             
             if not candidates: return None
             
-            # FONCTION DE SCORE INTELLIGENTE
+            # smart scoring function
             def vip_roi(c):
-                # 1. Calculer le Score Qualité (0-100)
+                # 1. calculate quality score (0-100)
                 appt_time = self.appointments[c.id].time
                 delay = self.system_time - appt_time
                 quality = 0.0
@@ -77,49 +69,45 @@ class ChildEnv(Env):
                 
                 quality = max(0.1, quality) 
 
-                # 2. Récupérer la Durée Estimée (Coût)
+                # 2. get estimated duration (cost)
                 duration = server.avg_service_time.get(c.task, 10.0)
                 duration = max(1.0, duration) 
 
-                # 3. Calculer le ROI AVEC BOOST
-                # ON AJOUTE UN MULTIPLICATEUR (x2.0)
-                # Cela signifie : "Même si c'est long, c'est un RDV, c'est sacré."
-                # Cela permet de passer devant les petits walk-ins très rentables.
-                roi = (quality * 2.0) / duration
+                # 3. calculate roi with boost
+                # huge multiplier (x3.0) to prioritize appointments over short walk-ins
+                roi = (quality * 3.0) / duration
                 
                 return (roi, -appt_time)
 
-            # On prend le candidat avec le meilleur ROI
+            # pick candidate with best roi
             return max(candidates, key=vip_roi)
 
-        # --- ACTION 1 : SERVE_WALKIN (Optimisé ROI) ---
+        # action 1 : serve walk-in (roi optimized)
         elif action == 1:
             candidates = []
             for c in self.customer_waiting.values():
-                # Filtre de base (Pas RDV + Compétence + Pas expiré)
+                # basic filter (no appointment + competence + not expired)
                 if c.id not in self.appointments and server.avg_service_time.get(c.task, 0) > 0:
                     if (self.system_time - c.arrival_time) < limit_wait:
                         candidates.append(c)
             
             if not candidates: return None
             
-            # FONCTION DE SCORE INTELLIGENTE
+            # smart scoring function
             def walkin_roi(c):
-                # 1. Calculer le Score Qualité Actuel (0-100)
+                # 1. calculate current quality score (0-100)
                 wait_time = self.system_time - c.arrival_time
                 quality = 100.0 * (1.0 - (wait_time / limit_wait))
                 quality = max(0.1, quality)
 
-                # 2. Récupérer la Durée Estimée
+                # 2. get estimated duration
                 duration = server.avg_service_time.get(c.task, 10.0)
                 duration = max(1.0, duration)
 
-                # 3. ROI
+                # 3. roi
                 roi = quality / duration
                 
-                # Tie-breaker : Si ROI égal, on prend le plus ancien (FIFO) pour purger
-                # Note : On veut maximiser le ROI, donc max()
-                # arrival_time petit = ancien. Donc on met -arrival_time pour que le max le prenne.
+                # tie-breaker: maximize roi, then maximize age (fifo)
                 return (roi, -c.arrival_time)
 
             return max(candidates, key=walkin_roi)
@@ -130,12 +118,8 @@ class ChildEnv(Env):
     def _get_invalid_action_reward(self):
         return -10.0
 
-    # =========================================================================
-    # 3. MASQUE D'ACTION (CRUCIAL)
-    # =========================================================================
-
     def action_masks(self):
-        # [VIP, WALKIN, WAIT]
+        # [vip, walkin, wait]
         mask = [False, False, False]
         
         server = self.current_working_server
@@ -145,34 +129,34 @@ class ChildEnv(Env):
         limit_vip_late = self.limit_vip_delay 
         limit_vip_early = self.limit_vip_early 
 
-        # --- MASQUE VIP (Action 0) ---
-        # True s'il existe AU MOINS UN patient VIP compatible et dans les temps
+        # mask vip (action 0)
+        # true if at least one compatible patient with appointment exists in time window
         has_vip = False
         for c in self.customer_waiting.values():
             if c.id in self.appointments:
-                # Vérif compétence serveur
+                # check competence
                 if server.avg_service_time.get(c.task, 0) > 0:
                     delay = self.system_time - self.appointments[c.id].time
-                    # Vérif fenêtre (On resserre un peu l'avance pour pas qu'il prenne trop tôt)
+                    # check window (slightly tighter early limit to avoid picking too early)
                     if -15 <= delay <= limit_vip_late:
                         has_vip = True
                         break
         mask[0] = has_vip
 
-        # --- MASQUE WALKIN (Action 1) ---
-        # True s'il existe AU MOINS UN patient Walkin compatible
+        # mask walkin (action 1)
+        # true if at least one compatible walkin patient exists
         has_walkin = False
         for c in self.customer_waiting.values():
             if c.id not in self.appointments:
-                # Vérif compétence serveur
+                # check competence
                 if server.avg_service_time.get(c.task, 0) > 0:
                     if (self.system_time - c.arrival_time) < limit_wait:
                         has_walkin = True
                         break
         mask[1] = has_walkin
 
-        # --- MASQUE WAIT (Action 2) ---
-        # Autorisé seulement si on ne peut rien faire d'autre (Anti-Grève)
+        # mask wait (action 2)
+        # allowed only if nothing else is possible (anti-strike)
         if mask[0] or mask[1]:
             mask[2] = False
         else:
@@ -180,13 +164,7 @@ class ChildEnv(Env):
             
         return mask
 
-    # =========================================================================
-    # 4. OBSERVATION & REWARD (On garde ce qui marche)
-    # =========================================================================
-
     def _get_obs(self):
-        # Exactement la même observation qu'avant.
-        # L'agent a besoin de voir le détail des tâches pour décider "VIP ou Walkin ?"
         waiting_customers, appointments, servers, _, selected_server_id, sim_time = self._get_state()
         server = servers[selected_server_id]
         
@@ -228,7 +206,7 @@ class ChildEnv(Env):
         return np.array(obs, dtype=np.float32)
 
     def _get_valid_reward(self, customer: Customer) -> float:
-        # On garde le bonus de survie + qualité
+        # quality score calculation
         quality_score = 0.0
         
         if customer.id in self.appointments:
@@ -249,7 +227,7 @@ class ChildEnv(Env):
             if wait_time < max_wait: quality_score = 100.0 * (1.0 - (wait_time / max_wait))
             else: quality_score = 0.0
 
-        # BONUS THROUGHPUT (Vital)
+        # bonus throughput (vital for learning)
         base_survival_bonus = 100.0 
         
         return base_survival_bonus + quality_score
